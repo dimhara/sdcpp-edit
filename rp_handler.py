@@ -1,37 +1,64 @@
 import runpod
 import subprocess
 import os
-import base64
 import uuid
+import sys
 from cryptography.fernet import Fernet
+import utils # Import our new utils module
 
 # --- CONFIGURATION ---
-# In production, pass this via RunPod Env Variables. For now, hardcoding or reading env.
-# MUST match the key generated in Step 0
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "YOUR_GENERATED_KEY_HERE").encode()
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
-# Paths to the baked-in models
 BINARY_PATH = "/usr/local/bin/sd"
 MODEL_DIR = "/models"
-DIFFUSION_MODEL = os.path.join(MODEL_DIR, "z_image_turbo-Q4_K.gguf")
-LLM_MODEL = os.path.join(MODEL_DIR, "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
-VAE_MODEL = os.path.join(MODEL_DIR, "ae.safetensors")
 OUTPUT_DIR = "/tmp"
+
+# --- DYNAMIC MODEL LOADER ---
+# This runs once when the container starts (Cold Start)
+try:
+    # 1. Ensure models exist (Cache or Download)
+    # Returns dict: {'filename.gguf': '/full/path/to/filename.gguf'}
+    resolved_paths = utils.prepare_models(MODEL_DIR)
+
+    # 2. Map generic file paths to SD specific arguments via Env Vars
+    # The user must provide these env vars to tell us which file is which
+    # Example Env: SD_DIFFUSION_FILE="z_image_turbo-Q4_K.gguf"
+    
+    diffusion_file = os.environ.get("SD_DIFFUSION_FILE", "z_image_turbo-Q4_K.gguf")
+    llm_file = os.environ.get("SD_LLM_FILE", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
+    vae_file = os.environ.get("SD_VAE_FILE", "ae.safetensors")
+
+    # Look up the absolute paths
+    DIFFUSION_MODEL_PATH = resolved_paths.get(diffusion_file)
+    LLM_MODEL_PATH = resolved_paths.get(llm_file)
+    VAE_MODEL_PATH = resolved_paths.get(vae_file)
+    
+    # Fallback: if not in the list, assume it might be a direct path or user forgot to put it in MODELS
+    if not DIFFUSION_MODEL_PATH: DIFFUSION_MODEL_PATH = os.path.join(MODEL_DIR, diffusion_file)
+    if not LLM_MODEL_PATH: LLM_MODEL_PATH = os.path.join(MODEL_DIR, llm_file)
+    if not VAE_MODEL_PATH: VAE_MODEL_PATH = os.path.join(MODEL_DIR, vae_file)
+
+    print("--- Model Paths Configured ---")
+    print(f"Diffusion: {DIFFUSION_MODEL_PATH}")
+    print(f"LLM: {LLM_MODEL_PATH}")
+    print(f"VAE: {VAE_MODEL_PATH}")
+
+except Exception as e:
+    print(f"CRITICAL: Model setup failed: {e}")
+    sys.exit(1)
+
 
 def handler(job):
     job_input = job['input']
     
-    # --- 1. DECRYPT THE PROMPT ---
+    # --- DECRYPT PROMPT ---
     encrypted_prompt = job_input.get("encrypted_prompt")
-    
     if not encrypted_prompt:
         return {"error": "No encrypted_prompt provided"}
 
     try:
-        # Decrypt: bytes -> bytes -> decode to string
         prompt = cipher_suite.decrypt(encrypted_prompt.encode()).decode()
-        print("Prompt decrypted successfully") # Don't print the actual prompt to logs!
     except Exception as e:
         return {"error": "Failed to decrypt prompt", "details": str(e)}
 
@@ -48,10 +75,10 @@ def handler(job):
 
     command = [
         BINARY_PATH,
-        "--diffusion-model", DIFFUSION_MODEL,
-        "--vae", VAE_MODEL,
-        "--llm", LLM_MODEL,
-        "-p", prompt,  # Using the decrypted prompt
+        "--diffusion-model", DIFFUSION_MODEL_PATH,
+        "--vae", VAE_MODEL_PATH,
+        "--llm", LLM_MODEL_PATH,
+        "-p", prompt,
         "--cfg-scale", cfg_scale,
         "--steps", steps,
         "-H", height,
@@ -69,11 +96,8 @@ def handler(job):
             with open(output_path, "rb") as image_file:
                 raw_image_bytes = image_file.read()
             
-            # --- 2. ENCRYPT THE IMAGE ---
-            # Instead of standard base64, we encrypt the raw bytes first
+            # Encrypt image
             encrypted_image_bytes = cipher_suite.encrypt(raw_image_bytes)
-            
-            # Convert encrypted bytes to string for JSON transport
             encrypted_image_str = encrypted_image_bytes.decode('utf-8')
             
             os.remove(output_path)
