@@ -1,0 +1,63 @@
+name: Build and Deploy (Unified)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-both:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60 # Allow time for model baking
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Lowercase Repo Name
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >>${GITHUB_ENV}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ----------------------------------------------------
+      # BUILD 1: The Full Version (Uses Cache)
+      # ----------------------------------------------------
+      - name: Build and Push FULL (Latest)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          target: full      # <--- Targets Stage 3
+          push: true
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:latest
+          # Use cache for compilation speed
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ----------------------------------------------------
+      # BUILD 2: The Serverless Version
+      # Re-uses the compilation from the step above
+      # ----------------------------------------------------
+      - name: Build and Push SERVERLESS
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          target: serverless # <--- Targets Stage 4
+          push: true
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:serverless
+          # We READ from cache, but don't WRITE (to avoid 10GB limit issues with baked models)
+          cache-from: type=gha
