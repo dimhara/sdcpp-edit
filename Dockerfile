@@ -36,9 +36,9 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary from builder
-COPY --from=builder /app/stable-diffusion.cpp/build/bin/sd /usr/local/bin/sd
+# Copy binary from builder (note "sd-cli" is renamed to "sd")
 
+COPY --from=builder /app/stable-diffusion.cpp/build/bin/sd-cli /usr/local/bin/sd
 # ==========================================
 # STAGE 3: FULL (Web Terminal / Dev)
 # ==========================================
