@@ -11,8 +11,11 @@ ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "YOUR_GENERATED_KEY_HERE").enc
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
 BINARY_PATH = "/usr/local/bin/sd"
-MODEL_DIR = "/models"
-OUTPUT_DIR = "/tmp"
+
+# keep files in RAM
+OUTPUT_DIR = "/dev/shm"
+
+MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 
 # --- DYNAMIC MODEL LOADER ---
 # This runs once when the container starts (Cold Start)

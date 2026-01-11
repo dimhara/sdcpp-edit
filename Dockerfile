@@ -66,6 +66,8 @@ WORKDIR /
 RUN mkdir -p /models
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
+ENV MODEL_DIR=/models
+
 # Copy logic files
 COPY utils.py /utils.py
 COPY rp_handler.py /rp_handler.py
