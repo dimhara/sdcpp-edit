@@ -1,6 +1,6 @@
 # ==========================================
-# STAGE 1: BUILDER (Shared)
-# Compiles the code (cached).
+# STAGE 1: BUILDER
+# Compiles the C++ code (cached).
 # ==========================================
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
 
@@ -23,10 +23,9 @@ RUN cmake .. -DSD_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=
     cmake --build . --config Release -- -j$(nproc)
 
 # ==========================================
-# STAGE 2: BASE RUNTIME (Shared)
+# STAGE 2: RUNTIME
 # ==========================================
-
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base_runtime
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS final
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
@@ -36,40 +35,28 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary from builder (note "sd-cli" is renamed to "sd")
-
+# 2. Copy binary from builder (Rename sd-cli -> sd)
 COPY --from=builder /app/stable-diffusion.cpp/build/bin/sd-cli /usr/local/bin/sd
-# ==========================================
-# STAGE 3: FULL (Web Terminal / Dev)
-# ==========================================
-FROM base_runtime AS full
 
-# Install CLI tools and util deps
-RUN pip3 install -U huggingface_hub
-
-WORKDIR /workspace
-COPY utils.py /utils.py
-COPY start.sh /start.sh
-RUN chmod +x /start.sh
-CMD ["/start.sh"]
-
-# ==========================================
-# STAGE 4: SERVERLESS (Production)
-# ==========================================
-FROM base_runtime AS serverless
-# Install RunPod SDK
+# 3. Install Python Dependencies
 RUN pip3 install --no-cache-dir runpod huggingface_hub cryptography
 
-WORKDIR /
+# 4. Setup Directories
+# /models = Default for Serverless
+# /workspace = Default for Interactive
+RUN mkdir -p /models && mkdir -p /workspace
 
-# Create model directory (will be populated at runtime)
-RUN mkdir -p /models
+# 5. Environment Variables
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
-
 ENV MODEL_DIR=/models
 
-# Copy logic files
+# 6. Copy Scripts
+WORKDIR /
 COPY utils.py /utils.py
 COPY rp_handler.py /rp_handler.py
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
+# DEFAULT CMD: Serverless Handler
+# For Interactive: Override Docker Command to ["/start.sh"]
 CMD ["python3", "-u", "/rp_handler.py"]

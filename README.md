@@ -11,7 +11,7 @@ A generic, secure, and high-performance sdcpp for RunPod Serverless, built on [s
 
 ## Configuration (Environment Variables)
 
-When deploying, configure these variables to tell the worker what to download and how to use it.
+Configure these variables to tell the worker what to download and how to use it.
 
 ### 1. Model Definitions
 **`MODELS`**
@@ -23,7 +23,7 @@ A comma-separated list of Hugging Face repositories and filenames to ensure are 
     ```
 
 ### 2. Pipeline Mapping
-Map the specific files to their roles in the pipeline using their **filenames**.
+Map specific files to their roles using their **filenames**.
 
 | Variable | Description | Example Value |
 | :--- | :--- | :--- |
@@ -35,28 +35,30 @@ Map the specific files to their roles in the pipeline using their **filenames**.
 | Variable | Description |
 | :--- | :--- |
 | `ENCRYPTION_KEY` | **Required.** 32-byte URL-safe base64 key for Fernet encryption. |
-| `MODEL_DIR` | Optional. Directory to store/look for models. Default: `/models` (Serverless) or `/workspace/models` (Interactive). |
+| `MODEL_DIR` | Directory to store models. Default: `/models` (Serverless) or `/workspace/models` (Interactive). |
 
 ## Deployment
 
+This project uses a **single container image** (`:latest`) for both Serverless and Interactive modes. The behavior is controlled by the **CMD** command.
+
 ### Option A: Serverless (Production)
-Use the `ghcr.io/dimhara/dimhara-sdcpp-edit:serverless` image.
 1.  Create a RunPod Serverless Endpoint.
-2.  Set the Environment Variables defined above.
-3.  (Optional) Enable **FlashBoot** or **Model Caching** in RunPod settings.
+2.  **Docker Command**: Leave Blank (Default).
+    *   *The container runs `rp_handler.py` automatically.*
+3.  Set Environment Variables defined above.
 
 ### Option B: Interactive Pod (Development)
-Use the `ghcr.io/dimhara/dimhara-sdcpp-edit:latest` image.
 1.  Deploy a GPU Pod.
-2.  The container will automatically run `start.sh`, downloading models defined in your Env Vars.
-3.  Connect via SSH to run manual tests.
+2.  **Docker Command**: `/start.sh`
+    *   *This script initializes models and keeps the container running for SSH.*
+3.  Set Environment Variables (either in the template or via terminal after connecting).
 
 ## Testing Locally (or via SSH)
 
-You can test the entire handler logic (encryption, model loading, generation) without deploying a serverless endpoint using the included `test_local.py`.
+You can test the handler logic without deploying a serverless endpoint using the included `test_local.py`.
 
 1.  **Connect to your Pod** via SSH.
-2.  **Export the necessary variables**:
+2.  **Export variables**:
     ```bash
     export ENCRYPTION_KEY="your_matching_key_here"
     export MODEL_DIR="/workspace/models" # Important for interactive pods
@@ -69,7 +71,7 @@ You can test the entire handler logic (encryption, model loading, generation) wi
     export SD_LLM_FILE="Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     export SD_VAE_FILE="ae.safetensors"
     ```
-3.  **Run the test script**:
+3.  **Run the test**:
     ```bash
     python3 test_local.py
     ```
@@ -79,6 +81,6 @@ You can test the entire handler logic (encryption, model loading, generation) wi
 
 *   `/usr/local/bin/sd`: The compiled binary.
 *   `/utils.py`: Logic for checking RunPod Cache vs HF Download.
-*   `/rp_handler.py`: Serverless entry point.
+*   `/rp_handler.py`: Serverless entry point (Default CMD).
+*   `/start.sh`: Interactive entry point (Optional CMD).
 *   `/test_local.py`: Script for local integration testing.
-*   `/start.sh`: Interactive entry point.

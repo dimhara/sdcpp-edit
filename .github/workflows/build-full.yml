@@ -1,4 +1,4 @@
-name: Build and Deploy (Unified)
+name: Build and Deploy
 
 on:
   push:
@@ -10,9 +10,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-both:
+  build-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 60 # Allow time for model baking
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -35,29 +35,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ----------------------------------------------------
-      # BUILD 1: The Full Version (Uses Cache)
+      # BUILD: Single Combined Image
       # ----------------------------------------------------
-      - name: Build and Push FULL (Latest)
+      - name: Build and Push
         uses: docker/build-push-action@v4
         with:
           context: .
-          target: full      # <--- Targets Stage 3
+          # No 'target' needed, it builds the last stage by default
           push: true
           tags: ghcr.io/${{ env.IMAGE_NAME }}:latest
-          # Use cache for compilation speed
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ----------------------------------------------------
-      # BUILD 2: The Serverless Version
-      # Re-uses the compilation from the step above
-      # ----------------------------------------------------
-      - name: Build and Push SERVERLESS
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          target: serverless # <--- Targets Stage 4
-          push: true
-          tags: ghcr.io/${{ env.IMAGE_NAME }}:serverless
-          # We READ from cache, but don't WRITE (to avoid 10GB limit issues with baked models)
-          cache-from: type=gha
