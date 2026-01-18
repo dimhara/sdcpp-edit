@@ -31,7 +31,7 @@ ENV PYTHONUNBUFFERED=1
 
 # 1. Install Runtime Deps + Python + Pip
 RUN apt-get update && apt-get install -y \
-    wget curl git libgomp1 libcurl4 \
+    wget curl git libgomp1 libcurl4 openssh-server \
     python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
