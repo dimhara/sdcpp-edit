@@ -1,78 +1,58 @@
-import requests
 import argparse
-import sys
+import requests
+import base64
 import os
-from cryptography.fernet import Fernet
+import json
 
-# --- CONFIGURATION ---
-API_KEY = "YOUR_API_KEY"
+# CONFIGURATION
 ENDPOINT_ID = "YOUR_ENDPOINT_ID"
-# MUST match the key used in the handler
-ENCRYPTION_KEY = "YOUR_GENERATED_KEY_HERE".encode() 
+API_KEY = "YOUR_API_KEY"
+URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync"
 
-cipher_suite = Fernet(ENCRYPTION_KEY)
+def encode_file(path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Input file not found: {path}")
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode('utf-8')
 
-def generate_secure(prompt, output_filename):
-    url = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync"
+def main():
+    parser = argparse.ArgumentParser(description="SD Client")
+    parser.add_argument("sd_args", type=str, help="Arguments. Use {INPUT} as placeholder for image path.")
+    parser.add_argument("--img", type=str, help="Path to local input image")
+    parser.add_argument("--out", type=str, default="output.png", help="Output filename")
     
+    args = parser.parse_args()
+
+    payload_input = {"cmd_args": args.sd_args}
+
+    if args.img:
+        payload_input['init_image'] = encode_file(args.img)
+        print(f"Loaded image: {args.img}")
+
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
-    print(f"--- Encrypting Prompt ---")
-    # Encrypt: string -> bytes -> encrypt -> decode to string
-    encrypted_prompt = cipher_suite.encrypt(prompt.encode()).decode()
-
-    payload = {
-        "input": {
-            "encrypted_prompt": encrypted_prompt, # Sending ONLY encrypted data
-            "width": 512,
-            "height": 1024,
-            "steps": 8,
-            "cfg_scale": 1.0,
-            "seed": -1
-        }
-    }
-
-    print(f"Sending encrypted payload...")
-    
+    print(f"Sending: {args.sd_args}")
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=600)
-        response.raise_for_status()
+        response = requests.post(URL, json={"input": payload_input}, headers=headers, timeout=600)
         data = response.json()
         
-        if data.get('status') == 'COMPLETED':
-            output = data.get('output', {})
-            
-            if 'encrypted_image' in output:
-                print("Received encrypted image. Decrypting...")
-                
-                encrypted_image_str = output['encrypted_image']
-                
-                # Decrypt: string -> bytes -> decrypt -> raw image bytes
-                try:
-                    decrypted_image_bytes = cipher_suite.decrypt(encrypted_image_str.encode())
-                    
-                    with open(output_filename, "wb") as f:
-                        f.write(decrypted_image_bytes)
-                    print(f"Success! Decrypted image saved to: {output_filename}")
-                    
-                except Exception as e:
-                    print(f"Decryption failed: {e}")
-            
-            elif 'error' in output:
-                print(f"Worker Error: {output['error']}")
+        if 'output' in data:
+            out = data['output']
+            if out.get('status') == 'success' and out.get('image'):
+                with open(args.out, "wb") as f:
+                    f.write(base64.b64decode(out['image']))
+                print(f"Saved: {args.out}")
+            else:
+                print("Error:", out.get('message'))
+                print("Stderr:", out.get('stderr'))
         else:
-            print(f"Job Status: {data.get('status')}")
-
+            print(json.dumps(data, indent=2))
+            
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Failed: {e}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("prompt", type=str)
-    parser.add_argument("filename", type=str)
-    args = parser.parse_args()
-    
-    generate_secure(args.prompt, args.filename)
+    main()

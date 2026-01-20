@@ -1,119 +1,141 @@
 import runpod
 import subprocess
 import os
-import uuid
+import base64
+import shlex
 import sys
-from cryptography.fernet import Fernet
-import utils # Import our new utils module
 
-# --- CONFIGURATION ---
-ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "YOUR_GENERATED_KEY_HERE").encode()
-cipher_suite = Fernet(ENCRYPTION_KEY)
+# CONFIGURATION
+SD_BINARY_PATH = os.environ.get("SD_BINARY_PATH", "./build/bin/sd")
 
-BINARY_PATH = "/usr/local/bin/sd"
+# STORAGE (RAM Disk - Security)
+OUTPUT_PATH = "/dev/shm/output.png"
+INPUT_PATH = "/dev/shm/input.png"
 
-# keep files in RAM
-OUTPUT_DIR = "/dev/shm"
+# TOKEN to look for in arguments to replace with actual path
+INPUT_PLACEHOLDER = "{INPUT}"
 
-MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
+def secure_delete(path):
+    """Overwrites file with zeros before deletion."""
+    if os.path.exists(path):
+        try:
+            length = os.path.getsize(path)
+            with open(path, "wb") as f:
+                f.write(b'\0' * length)
+                f.flush()
+                os.fsync(f.fileno())
+            os.remove(path)
+        except Exception as e:
+            print(f"Warning: Failed to secure delete {path}: {e}")
+            if os.path.exists(path):
+                os.remove(path)
 
-# --- DYNAMIC MODEL LOADER ---
-# This runs once when the container starts (Cold Start)
-try:
-    # 1. Ensure models exist (Cache or Download)
-    # Returns dict: {'filename.gguf': '/full/path/to/filename.gguf'}
-    resolved_paths = utils.prepare_models(MODEL_DIR)
+def cleanup():
+    secure_delete(INPUT_PATH)
+    secure_delete(OUTPUT_PATH)
 
-    # 2. Map generic file paths to SD specific arguments via Env Vars
-    # The user must provide these env vars to tell us which file is which
-    # Example Env: SD_DIFFUSION_FILE="z_image_turbo-Q4_K.gguf"
-    
-    diffusion_file = os.environ.get("SD_DIFFUSION_FILE", "z_image_turbo-Q4_K.gguf")
-    llm_file = os.environ.get("SD_LLM_FILE", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
-    vae_file = os.environ.get("SD_VAE_FILE", "ae.safetensors")
+def save_input_image(b64_string):
+    try:
+        with open(INPUT_PATH, "wb") as f:
+            f.write(base64.b64decode(b64_string))
+        return True
+    except Exception as e:
+        print(f"Error saving input image: {e}")
+        return False
 
-    # Look up the absolute paths
-    DIFFUSION_MODEL_PATH = resolved_paths.get(diffusion_file)
-    LLM_MODEL_PATH = resolved_paths.get(llm_file)
-    VAE_MODEL_PATH = resolved_paths.get(vae_file)
-    
-    # Fallback: if not in the list, assume it might be a direct path or user forgot to put it in MODELS
-    if not DIFFUSION_MODEL_PATH: DIFFUSION_MODEL_PATH = os.path.join(MODEL_DIR, diffusion_file)
-    if not LLM_MODEL_PATH: LLM_MODEL_PATH = os.path.join(MODEL_DIR, llm_file)
-    if not VAE_MODEL_PATH: VAE_MODEL_PATH = os.path.join(MODEL_DIR, vae_file)
-
-    print("--- Model Paths Configured ---")
-    print(f"Diffusion: {DIFFUSION_MODEL_PATH}")
-    print(f"LLM: {LLM_MODEL_PATH}")
-    print(f"VAE: {VAE_MODEL_PATH}")
-
-except Exception as e:
-    print(f"CRITICAL: Model setup failed: {e}")
-    sys.exit(1)
-
+def encode_output_image():
+    if not os.path.exists(OUTPUT_PATH):
+        return None
+    with open(OUTPUT_PATH, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
 
 def handler(job):
     job_input = job['input']
+    cmd_args_input = job_input.get('cmd_args', "")
     
-    # --- DECRYPT PROMPT ---
-    encrypted_prompt = job_input.get("encrypted_prompt")
-    if not encrypted_prompt:
-        return {"error": "No encrypted_prompt provided"}
+    # Parse arguments into a list
+    if isinstance(cmd_args_input, str):
+        args = shlex.split(cmd_args_input)
+    elif isinstance(cmd_args_input, list):
+        args = cmd_args_input
+    else:
+        return {"error": "cmd_args must be a string or list"}
+
+    cleanup() # Clean slate
 
     try:
-        prompt = cipher_suite.decrypt(encrypted_prompt.encode()).decode()
-    except Exception as e:
-        return {"error": "Failed to decrypt prompt", "details": str(e)}
+        # Handle Input Image
+        has_input_image = False
+        if 'init_image' in job_input and job_input['init_image']:
+            if save_input_image(job_input['init_image']):
+                has_input_image = True
+            else:
+                return {"status": "error", "message": "Failed to write image to RAM."}
 
-    # Standard params
-    cfg_scale = str(job_input.get("cfg_scale", 1.0))
-    width = str(job_input.get("width", 512))
-    height = str(job_input.get("height", 1024))
-    steps = str(job_input.get("steps", 8))
-    seed = str(job_input.get("seed", -1))
-    
-    unique_id = str(uuid.uuid4())
-    output_filename = f"{unique_id}.png"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-
-    command = [
-        BINARY_PATH,
-        "--diffusion-model", DIFFUSION_MODEL_PATH,
-        "--vae", VAE_MODEL_PATH,
-        "--llm", LLM_MODEL_PATH,
-        "-p", prompt,
-        "--cfg-scale", cfg_scale,
-        "--steps", steps,
-        "-H", height,
-        "-W", width,
-        "--rng", "cuda",
-        "--diffusion-fa",
-        "-s", seed,
-        "-o", output_path
-    ]
-
-    try:
-        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Argument Substitution Logic
+        # 1. Check if user explicitly put "{INPUT}" in their command string
+        # 2. If yes, replace it with the actual /dev/shm path
+        # 3. If no, but an image was provided, append standard "-i" flag
         
-        if os.path.exists(output_path):
-            with open(output_path, "rb") as image_file:
-                raw_image_bytes = image_file.read()
-            
-            # Encrypt image
-            encrypted_image_bytes = cipher_suite.encrypt(raw_image_bytes)
-            encrypted_image_str = encrypted_image_bytes.decode('utf-8')
-            
-            os.remove(output_path)
+        final_args = []
+        replaced_placeholder = False
 
+        for arg in args:
+            if arg == INPUT_PLACEHOLDER:
+                if has_input_image:
+                    final_args.append(INPUT_PATH)
+                    replaced_placeholder = True
+                else:
+                    return {"status": "error", "message": "Command used {INPUT} placeholder but no image provided."}
+            else:
+                final_args.append(arg)
+
+        # Fallback: User sent image but didn't specify where it goes -> assume standard -i
+        if has_input_image and not replaced_placeholder:
+            final_args = final_args + ["-i", INPUT_PATH]
+
+        # Force Output Path
+        # We assume the binary accepts -o. If your binary uses something else, 
+        # you can add an {OUTPUT} placeholder logic similar to above.
+        final_cmd = [SD_BINARY_PATH] + final_args + ["-o", OUTPUT_PATH]
+
+        print(f"Executing: {' '.join(final_cmd)}")
+
+        result = subprocess.run(
+            final_cmd,
+            capture_output=True,
+            text=True,
+            check=False # We handle return codes manually to capture stderr
+        )
+
+        if result.returncode != 0:
+             return {
+                "status": "error",
+                "message": "Binary returned non-zero exit code",
+                "stderr": result.stderr,
+                "stdout": result.stdout
+            }
+        
+        img_b64 = encode_output_image()
+        
+        if img_b64:
             return {
                 "status": "success",
-                "encrypted_image": encrypted_image_str
+                "image": img_b64,
+                "stdout": result.stdout
             }
         else:
-            return {"error": "Output file missing"}
+            return {
+                "status": "error",
+                "message": "No output image generated.",
+                "stderr": result.stderr,
+                "stdout": result.stdout
+            }
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
+    finally:
+        cleanup() # Secure wipe
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})

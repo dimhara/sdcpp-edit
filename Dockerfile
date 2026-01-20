@@ -53,6 +53,7 @@ ENV MODEL_DIR=/models
 # 6. Copy Scripts
 WORKDIR /
 COPY utils.py /utils.py
+COPY test_local.py /test_local.py
 COPY rp_handler.py /rp_handler.py
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
