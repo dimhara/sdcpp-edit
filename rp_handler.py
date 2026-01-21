@@ -6,7 +6,7 @@ import shlex
 import sys
 
 # CONFIGURATION
-SD_BINARY_PATH = os.environ.get("SD_BINARY_PATH", "./build/bin/sd")
+SD_BINARY_PATH = os.environ.get("SD_BINARY_PATH", "/usr/local/bin/sd")
 
 # STORAGE (RAM Disk - Security)
 OUTPUT_PATH = "/dev/shm/output.png"
@@ -137,5 +137,20 @@ def handler(job):
     finally:
         cleanup() # Secure wipe
 
+
+def ensure_models_downloaded():
+    """
+    Runs utils.py to download models if they don't exist.
+    """
+    print("--- Checking/Downloading Models ---")
+    try:
+        subprocess.run(["python3", "utils.py"], check=True)
+        print("--- Model Download/Setup Complete ---")
+    except subprocess.CalledProcessError as e:
+        print(f"CRITICAL: Failed to download models using utils.py. Error: {e}")
+    except Exception as e:
+        print(f"CRITICAL: Unexpected error during model setup: {e}")
+
 if __name__ == "__main__":
+    ensure_models_downloaded()
     runpod.serverless.start({"handler": handler})
