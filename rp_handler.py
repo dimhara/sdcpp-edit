@@ -5,6 +5,7 @@ import base64
 import shlex
 import sys
 import json
+import time
 from cryptography.fernet import Fernet
 
 # CONFIGURATION
@@ -17,7 +18,6 @@ INPUT_PLACEHOLDER = "{INPUT}"
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY")
 
 def secure_delete(path):
-    """Overwrites file with zeros before deletion."""
     if os.path.exists(path):
         try:
             length = os.path.getsize(path)
@@ -33,15 +33,34 @@ def cleanup():
     secure_delete(INPUT_PATH)
     secure_delete(OUTPUT_PATH)
 
+def list_directory(path):
+    """Helper to print dir contents to logs"""
+    if os.path.exists(path):
+        print(f"📁 Listing {path}:", flush=True)
+        try:
+            print(os.listdir(path), flush=True)
+        except Exception as e:
+            print(f"Error reading {path}: {e}", flush=True)
+    else:
+        print(f"❌ Path not found: {path}", flush=True)
+
 def ensure_models_downloaded():
     """Checks/Downloads models on Cold Start."""
+    # Simple check to see if we already have files
     if os.path.exists("/workspace/models") or os.path.exists("/models"):
-        return # Assume ready
-    print("--- 📥 Triggering Model Download (utils.py) ---")
+        # You might want to check for specific files if you are paranoid
+        return 
+
+    print("--- 📥 Triggering Model Download (utils.py) ---", flush=True)
     try:
-        subprocess.run(["python", "utils.py"], check=False)
+        # Capture output to print it to logs for debugging
+        result = subprocess.run(["python", "utils.py"], capture_output=True, text=True, check=False)
+        print("--- utils.py STDOUT ---", flush=True)
+        print(result.stdout, flush=True)
+        print("--- utils.py STDERR ---", flush=True)
+        print(result.stderr, flush=True)
     except Exception as e:
-        print(f"Warning: Model setup check failed: {e}")
+        print(f"CRITICAL: Failed to run utils.py: {e}", flush=True)
 
 def handler(job):
     # 1. DECRYPT PAYLOAD
@@ -55,14 +74,30 @@ def handler(job):
         if not encrypted_input:
             return {"status": "error", "message": "No encrypted_input found."}
 
-        # Decrypt -> JSON Decode
         decrypted_json_str = f.decrypt(encrypted_input.encode()).decode()
         job_input = json.loads(decrypted_json_str)
         
     except Exception as e:
-        # We print a generic error, but NOT the payload content
-        print("Security Error: Decryption failed.")
+        print("Security Error: Decryption failed.", flush=True)
         return {"status": "error", "message": "Decryption failed or invalid key."}
+
+    # --- 🔍 DEBUG TRAP DOOR START ---
+    if job_input.get("debug_sleep") is True:
+        print("\n\n=== 🕵️ DEBUG SLEEP MODE ACTIVATED ===", flush=True)
+        print("Printing File System State...", flush=True)
+        
+        list_directory("/workspace")
+        list_directory("/workspace/models")
+        list_directory("/models")
+        list_directory(".") # Current dir
+        
+        print("\n=== ENTERING INFINITE SLEEP ===", flush=True)
+        print("You can now SSH into this worker.", flush=True)
+        
+        while True:
+            time.sleep(60)
+            # Keeping connection alive
+    # --- DEBUG TRAP DOOR END ---
 
     # 2. PARSE ARGUMENTS
     cmd_args_input = job_input.get('cmd_args', "")
@@ -105,20 +140,13 @@ def handler(job):
 
         final_cmd = [SD_BINARY_PATH] + final_args + ["-o", OUTPUT_PATH]
 
-        # 5. EXECUTE (SECURE LOGGING)
-        # We do NOT print 'final_cmd' to avoid leaking prompts to system logs
-        print(f"--- 🚀 Starting Diffusion Process ({len(final_args)} args) ---")
-
+        # 5. EXECUTE
         result = subprocess.run(
             final_cmd,
-            capture_output=True, # Capture stdout/stderr internally
+            capture_output=True,
             text=True,
             check=False
         )
-
-        # 6. RETURN RESULT
-        # Stdout/Stderr is returned to the client inside the encrypted HTTPS response
-        # It is NOT printed to the RunPod system log.
         
         response = {
             "stdout": result.stdout,
@@ -126,7 +154,6 @@ def handler(job):
         }
 
         if result.returncode != 0:
-            print("--- ❌ Binary Execution Failed (See client response for details) ---")
             response["status"] = "error"
             response["message"] = "Binary execution failed"
         else:
@@ -134,23 +161,23 @@ def handler(job):
                 with open(OUTPUT_PATH, "rb") as image_file:
                     response["image"] = base64.b64encode(image_file.read()).decode('utf-8')
                 response["status"] = "success"
-                print("--- ✅ Generation Success ---")
             else:
                 response["status"] = "error"
                 response["message"] = "No output image generated"
-                print("--- ⚠️ Finished, but no output file found ---")
         
         return response
 
     except Exception as e:
-        print(f"--- 💥 Handler Exception: {str(e)} ---")
+        print(f"Handler Exception: {str(e)}", flush=True)
         return {"status": "error", "message": str(e)}
     finally:
         cleanup()
 
 if __name__ == "__main__":
+    # Ensure logs flush immediately
+    sys.stdout.reconfigure(line_buffering=True)
     ensure_models_downloaded()
     if not os.path.exists(SD_BINARY_PATH):
-        print(f"Error: Binary not found at {SD_BINARY_PATH}")
+        print(f"Error: Binary not found at {SD_BINARY_PATH}", flush=True)
         sys.exit(1)
     runpod.serverless.start({"handler": handler})

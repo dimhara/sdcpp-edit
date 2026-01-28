@@ -3,6 +3,7 @@ import requests
 import base64
 import os
 import json
+import time
 from cryptography.fernet import Fernet
 
 # CONFIGURATION
@@ -11,7 +12,7 @@ API_KEY = "YOUR_API_KEY"
 URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync"
 
 # SECURITY - Must match Server
-ENCRYPTION_KEY = "YOUR_GENERATED_KEY_HERE" 
+ENCRYPTION_KEY = "YOUR_GENERATED_KEY_HERE"
 
 def encode_file(path):
     if not os.path.exists(path): raise FileNotFoundError(path)
@@ -19,15 +20,23 @@ def encode_file(path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("sd_args", help="Arguments using {INPUT}")
+    parser.add_argument("sd_args", nargs='?', help="Arguments using {INPUT}")
     parser.add_argument("--img", help="Input image path")
     parser.add_argument("--out", default="output.png")
+    parser.add_argument("--debug-ssh", action="store_true", help="Send sleep command to server for SSH debugging")
     args = parser.parse_args()
 
-    # 1. PREPARE RAW PAYLOAD
-    payload = {"cmd_args": args.sd_args}
-    if args.img:
-        payload['init_image'] = encode_file(args.img)
+    # 1. PREPARE PAYLOAD
+    if args.debug_ssh:
+        print("⚠️  Preparing DEBUG SLEEP payload...")
+        payload = {"debug_sleep": True}
+    else:
+        if not args.sd_args:
+            print("Error: sd_args are required unless using --debug-ssh")
+            return
+        payload = {"cmd_args": args.sd_args}
+        if args.img:
+            payload['init_image'] = encode_file(args.img)
 
     # 2. ENCRYPT PAYLOAD
     try:
@@ -40,10 +49,20 @@ def main():
 
     # 3. SEND REQUEST
     headers = {"Authorization": f"Bearer {API_KEY}"}
-    print("Sending encrypted request...")
+    
+    if args.debug_ssh:
+        print("Sending debug command. The client will hang/timeout while the server sleeps.")
+        print("Go to RunPod Web Console now to check logs and SSH.")
+    else:
+        print("Sending encrypted request...")
     
     try:
-        resp = requests.post(URL, json={"input": {"encrypted_input": encrypted_token}}, headers=headers, timeout=600)
+        # We use a short timeout for debug mode because we don't expect a reply
+        timeout = 5 if args.debug_ssh else 600
+        
+        resp = requests.post(URL, json={"input": {"encrypted_input": encrypted_token}}, headers=headers, timeout=timeout)
+        
+        # If we are here in debug mode, something weird happened (server returned early)
         data = resp.json()
         
         if 'output' in data:
@@ -52,13 +71,18 @@ def main():
                 with open(args.out, "wb") as f: f.write(base64.b64decode(out['image']))
                 print(f"Success! Saved to {args.out}")
             else:
-                print("Server Error.")
+                print("Server Error / Log:")
                 print("Message:", out.get('message'))
-                # Debug info is only printed here on client, not in server logs
-                print("STDERR (Last 500 chars):", out.get('stderr')[-500:] if out.get('stderr') else "None")
+                print("STDERR:", out.get('stderr'))
         else:
-            print("Unexpected response:", json.dumps(data, indent=2))
+            print("Response:", json.dumps(data, indent=2))
             
+    except requests.exceptions.Timeout:
+        if args.debug_ssh:
+            print("\n✅ Timeout reached (Expected).")
+            print("The server should now be sleeping. Check RunPod logs.")
+        else:
+            print("Error: Request timed out.")
     except Exception as e:
         print(f"Request failed: {e}")
 
