@@ -59,7 +59,7 @@ def ensure_models_downloaded():
     try:
         # Stream output so you don't stare at a blank log
         process = subprocess.Popen(
-            ["python", "utils.py"], 
+            ["python3", "utils.py"], 
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE, 
             text=True
