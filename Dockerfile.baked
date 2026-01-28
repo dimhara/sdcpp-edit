@@ -1,0 +1,33 @@
+# Bake big models inside the container to avoid downloading them (good for building on runpod instead of github actions)
+
+FROM ghcr.io/dimhara/sdcpp-edit:latest
+
+# Can I override this from runpod during image build ?
+ARG MODELS="unsloth/Qwen-Image-Edit-2511-GGUF:qwen-image-edit-2511-Q4_K_M.gguf,unsloth/Qwen2.5-VL-7B-Instruct-GGUF:Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf,Comfy-Org/Qwen-Image_ComfyUI:split_files/vae/qwen_image_vae.safetensors,lightx2v/Qwen-Image-Edit-2511-Lightning:Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+
+
+ENV MODELS=$MODELS
+
+
+RUN mkdir -p /models
+
+# utils.py uses 'MODELS'
+RUN python3 utils.py
+
+RUN bash -c ' \
+    echo "--- Checking where utils.py put the files ---" && \
+    if [ "$(ls -A /models)" ]; then \
+        echo "✅ Files found in /models. All good."; \
+    elif [ -d "/workspace/models" ] && [ "$(ls -A /workspace/models)" ]; then \
+        echo "🔄 Moving files from /workspace/models to /models..."; \
+        mv /workspace/models/* /models/ && rm -rf /workspace/models; \
+    elif [ -d "./models" ] && [ "$(ls -A ./models)" ]; then \
+        echo "🔄 Moving files from ./models to /models..."; \
+        mv ./models/* /models/ && rm -rf ./models; \
+    else \
+        echo "❌ ERROR: utils.py ran but no models were found in /models, /workspace/models, or ./models"; \
+        exit 1; \
+    fi'
+
+# (CMD inherited from base image)
+
