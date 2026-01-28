@@ -46,21 +46,42 @@ def list_directory(path):
 
 def ensure_models_downloaded():
     """Checks/Downloads models on Cold Start."""
-    # Simple check to see if we already have files
-    if os.path.exists("/workspace/models") or os.path.exists("/models"):
-        # You might want to check for specific files if you are paranoid
+    
+    # TARGET DIRECTORY FOR SERVERLESS
+    model_dir = "/models"
+
+    # Check if directory exists AND is not empty
+    if os.path.exists(model_dir) and len(os.listdir(model_dir)) > 0:
+        print(f"--- ✅ Found files in {model_dir}, skipping download. ---", flush=True)
         return 
 
-    print("--- 📥 Triggering Model Download (utils.py) ---", flush=True)
+    print(f"--- 📥 Triggering Model Download to {model_dir} (utils.py) ---", flush=True)
     try:
-        # Capture output to print it to logs for debugging
-        result = subprocess.run(["python", "utils.py"], capture_output=True, text=True, check=False)
-        print("--- utils.py STDOUT ---", flush=True)
-        print(result.stdout, flush=True)
-        print("--- utils.py STDERR ---", flush=True)
-        print(result.stderr, flush=True)
+        # Stream output so you don't stare at a blank log
+        process = subprocess.Popen(
+            ["python", "utils.py"], 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True
+        )
+        
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(f"[utils.py] {output.strip()}", flush=True)
+                
+        rc = process.poll()
+        if rc != 0:
+            print(f"CRITICAL: utils.py failed with return code {rc}", flush=True)
+            # Print stderr if it failed
+            print(f"STDERR: {process.stderr.read()}", flush=True)
+        else:
+            print("--- ✅ Model Download Complete ---", flush=True)
+
     except Exception as e:
-        print(f"CRITICAL: Failed to run utils.py: {e}", flush=True)
+        print(f"CRITICAL: Failed to execute utils.py: {e}", flush=True)
 
 def handler(job):
     # 1. DECRYPT PAYLOAD
