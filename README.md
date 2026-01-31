@@ -1,180 +1,128 @@
-# sdcpp-edit
+# sdcpp-edit: Secure Serverless container for "Stable Diffusion C++"
 
-This repository contains a robust, security-focused serverless handler for [stablediffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) on RunPod. 
+A robust, security-focused serverless handler for [stablediffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) running on RunPod.
 
 It is designed to be **argument-agnostic**: it accepts *any* command line argument string supported by the `sd` binary, making it compatible with SD1.5, SDXL, Flux, and specialized pipelines like Qwen-Image-Edit.
 
-## Features
+## 🚀 Features
 
-*   **Full CLI Flexibility:** Pass arguments exactly as you would in the terminal (e.g., `--diffusion-model`, `--offload-to-cpu`, `--flow-shift`).
+*   **Async & Resumable:** Uses RunPod's asynchronous API (`/run`) with client-side polling. If your client crashes or disconnects, you can resume the session using the Job ID.
+*   **End-to-End Encryption:** Prompts and images are encrypted **locally** on the client before being sent. The server processes them in memory and returns encrypted results.
 *   **Secure In-Memory Processing:** Input and Output images are stored in `/dev/shm` (RAM disk), avoiding disk I/O latency. Input images are overwritten with zero-bytes before deletion.
-*   **Universal Input Handling:** Supports standard `-i` inputs as well as reconstruction (`-r`) inputs via a placeholder token.
-*   **End-to-End Encryption**: Prompts are encrypted on the client, processed in memory, and the resulting image is encrypted before leaving the worker.
-*   **RunPod Cache Support**: Automatically detects if models are present in the RunPod Host Cache (`/runpod-volume/huggingface-cache/hub`) to enable instant cold starts.
-*   **CUDA Optimized**: Compiled with cuBLAS for NVIDIA Turing (T4), Ampere (A10/A100), and Ada (L40/4090) architectures.
-
-## Configuration (Environment Variables)
-
-Configure these variables to tell the worker what to download and how to use it.
-
-### 1. Model Definitions
-**`MODELS`**
-A comma-separated list of Hugging Face repositories and filenames to ensure are present (either via Cache or Download).
-*   Format: `RepoID:Filename,RepoID:Filename`
-*   Example:
-    ```text
-    leejet/Z-Image-Turbo-GGUF:z_image_turbo-Q4_K.gguf,unsloth/Qwen3-4B-Instruct-2507-GGUF:Qwen3-4B-Instruct-2507-Q4_K_M.gguf,Comfy-Org/z_image_turbo:split_files/vae/ae.safetensors
-    ```
-
-
+*   **Universal Input Handling:** Supports standard `-i` inputs as well as reconstruction (`-r`) inputs via a placeholder token (`{INPUT}`).
+*   **RunPod Cache Support:** Automatically detects if models are present in the RunPod Host Cache (`/runpod-volume/huggingface-cache/hub`) to enable instant cold starts.
+*   **CUDA Optimized:** Compiled with cuBLAS for NVIDIA Turing (T4), Ampere (A10/A100), and Ada (L40/4090) architectures.
 
 ---
 
-## 1. Setup
+## 🛠️ Setup
 
-### Server (`rp_handler.py`)
-Ensure your Docker container has `stablediffusion.cpp` compiled. Set the environment variable in your Dockerfile or RunPod template:
+### 1. Server Configuration
+Deploy the container on RunPod Serverless. You must set the following **Environment Variables**:
 
-```bash
-ENV SD_BINARY_PATH="/usr/local/bin/sd"
-```
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `ENCRYPTION_KEY` | **Required.** 32-byte URL-safe base64 key for Fernet encryption. | `YOUR_GENERATED_KEY` |
+| `MODELS` | Comma-separated list of Hugging Face models to download/cache. Format: `RepoID:Filename` | `leejet/sd-v1-5:model.gguf` |
+| `SD_BINARY_PATH` | Path to the binary (Default provided in Dockerfile). | `/usr/local/bin/sd` |
 
-### Client (`client.py`)
-Update the top of `client.py` with your credentials:
+### 2. Client Configuration
+Open `client.py` and update the configuration section at the top:
 
 ```python
 ENDPOINT_ID = "YOUR_ENDPOINT_ID"
 API_KEY = "YOUR_API_KEY"
+ENCRYPTION_KEY = "YOUR_GENERATED_KEY"  # Must match Server
 ```
 
 ---
 
-## 2. Usage
+## 💻 Usage
 
-### The `{INPUT}` Placeholder
-Different models use different flags for input images (e.g., standard SD uses `-i`, Qwen-Edit uses `-r`). 
-
-*   **Mechanism:** When you send an image via the client, the server saves it to RAM.
-*   **Usage:** Use `{INPUT}` in your argument string. The handler will replace `{INPUT}` with the actual path (`/dev/shm/input.png`).
-*   **Fallback:** If you do not specify `{INPUT}` but send an image, the handler automatically appends `-i /dev/shm/input.png` to your arguments.
-
-### Important: Absolute Paths
-Since the handler runs in a specific directory, **always use absolute paths** for your models.
-*   ❌ `--model ./qwen.gguf`
-*   ✅ `--model /workspace/models/qwen.gguf`
-
----
-
-## 3. Examples
-
-### A. Qwen-Image-Edit (Complex Pipeline)
-Qwen requires loading a Diffusion model, a VAE, and an LLM. It uses `-r` for the input image.
+### Basic Command Structure
+The client accepts a raw argument string for the `sd` binary.
 
 ```bash
+python client.py "ARGUMENTS_HERE" --out result.png
+```
+
+### 1. Image-to-Image (with Input)
+Use the `{INPUT}` placeholder to tell the handler where to inject the uploaded image path.
+
+**Example: Qwen-Image-Edit**
+```bash
 python client.py \
-  "--diffusion-model /workspace/models/qwen-image-edit-2511-Q4_K_M.gguf \
-   --vae /workspace/models/qwen_image_vae.safetensors \
-   --llm /workspace/models/qwen_2.5_vl_7b.safetensors \
-   --sampling-method euler -v --offload-to-cpu --diffusion-fa --flow-shift 3 \
+  "--diffusion-model /models/qwen-image-edit.gguf \
+   --vae /models/qwen_vae.safetensors \
+   --llm /models/qwen_llm.gguf \
    -r {INPUT} \
    -p 'change red to blue' \
-   --qwen-image-zero-cond-t --steps 4 --cfg-scale 1.0" \
+   --steps 4" \
   --img ./local_photo.png \
   --out result.png
 ```
 
-### B. Using LoRAs
-Use `--lora-model-dir` to point to your folder, and invoke the LoRA in the prompt using angle brackets.
-
-**Note:** Watch your quoting! Wrap the whole argument string in double quotes `"` and the prompt in single quotes `'`.
-
+**Example: Standard SD Img2Img**
+If you don't specify `{INPUT}`, the handler automatically appends `-i [path]`.
 ```bash
 python client.py \
-  "--diffusion-model /workspace/models/sd-v1-5.gguf \
-   --lora-model-dir /workspace/models/loras \
-   -p 'a photograph of a cat <lora:pixel-art:1.0>' \
-   --steps 20" \
-  --out cat_pixel.png
+  "-p 'anime style' --strength 0.4" \
+  --img ./photo.jpg \
+  --out anime.png
 ```
 
-### C. Standard Text-to-Image (No Input Image)
-
+### 2. Text-to-Image (No Input)
 ```bash
 python client.py \
   "-p 'a futuristic cyberpunk city' --steps 20 -v" \
   --out city.png
 ```
 
-### D. Standard Image-to-Image (Implicit -i)
-If you don't use `{INPUT}`, the handler appends `-i` automatically.
+### 3. Resuming a Job
+If your client script crashes, internet disconnects, or you accidentally close the terminal, the job continues running on the server. You can retrieve the result using the Job ID printed at the start of the previous run.
 
 ```bash
-python client.py \
-  "-p 'make it anime style' --strength 0.4" \
-  --img ./photo.jpg \
-  --out anime.png
+# No need to provide prompt/image arguments when resuming
+python client.py --resume-id "123-abc-456-def" --out recovered_image.png
 ```
 
 ---
 
-## 4. Local Testing (`test_local.py`)
 
-You can test the handler inside your running Pod (via SSH or Web Terminal) without triggering an API call. This is useful for debugging paths and memory issues.
+## 📦 Model Management
 
-1.  SSH into your Pod.
-2.  Run the test script:
+The container uses a smart download system via `utils.py`.
 
-```bash
-python3 test_local.py \
-  --img test_input.png \
-  --out test_result.png \
-  --args "--diffusion-model /workspace/models/qwen.gguf ... -r {INPUT} -p 'test'"
+### The `MODELS` Variable
+Configure the `MODELS` environment variable to ensure specific files are available.
+*   **Format:** `User/Repo:Filename,User/Repo:Filename`
+*   **Behavior:**
+    1.  Checks `/runpod-volume/huggingface-cache` (Host Cache).
+    2.  Checks `/models` (Container).
+    3.  Downloads from HuggingFace if missing.
+
+**Example Value:**
+```text
+leejet/Z-Image-Turbo-GGUF:z_image_turbo-Q4_K.gguf,unsloth/Qwen3-4B-Instruct-GGUF:Qwen3.gguf
 ```
 
-This verifies:
-1.  Image saving to `/dev/shm`.
-2.  Argument parsing and `{INPUT}` replacement.
-3.  Binary execution.
-4.  Secure deletion of the input file.
+### Baked vs. Dynamic
+*   **Dynamic:** Use the standard Docker image and set `MODELS` in the RunPod console. Great for flexibility.
+*   **Baked:** Use `Dockerfile.baked` to build a container with models pre-included (faster start time, larger image size).
 
 ---
 
-## 5. Security Details
+## 🐛 Debugging
 
-This handler is designed for privacy:
-1.  **RAM-Only:** Input and Output images are written to `/dev/shm`, which is a RAM disk. Data is never written to persistent storage (HDD/SSD).
-2.  **Secure Wipe:** After execution (success or failure), the `secure_delete` function overwrites the input file with `\x00` (zeros) before unlinking the file, ensuring the image data is unrecoverable from memory buffers.
+### SSH Debugging (Interactive)
+If you need to debug paths or memory:
+1.  Deploy the pod with `START_SSH=true` (or use the provided `start.sh` in Interactive template).
+2.  SSH into the pod.
+3.  Run the local test script to bypass the API and encryption layers:
+    ```bash
+    python3 test_local.py --img test.png --out result.png --args "... -p 'test'"
+    ```
 
-
-
-### 2. Pipeline Mapping
-Map specific files to their roles using their **filenames**.
-
-| Variable | Description | Example Value |
-| :--- | :--- | :--- |
-| `SD_DIFFUSION_FILE` | The main diffusion model (GGUF) | `z_image_turbo-Q4_K.gguf` |
-| `SD_LLM_FILE` | The LLM used for prompt adherence (GGUF) | `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` |
-| `SD_VAE_FILE` | The VAE model (SafeTensors/GGUF) | `ae.safetensors` |
-
-### 3. Settings & Security
-| Variable | Description |
-| :--- | :--- |
-| `ENCRYPTION_KEY` | **Required.** 32-byte URL-safe base64 key for Fernet encryption. |
-| `MODEL_DIR` | Directory to store models. Default: `/models` (Serverless) or `/workspace/models` (Interactive). |
-
-## Deployment
-
-This project uses a **single container image** (`:latest`) for both Serverless and Interactive modes. The behavior is controlled by the **CMD** command.
-
-### Option A: Serverless (Production)
-1.  Create a RunPod Serverless Endpoint.
-2.  **Docker Command**: Leave Blank (Default).
-    *   *The container runs `rp_handler.py` automatically.*
-3.  Set Environment Variables defined above.
-
-### Option B: Interactive Pod (Development)
-1.  Deploy a GPU Pod.
-2.  **Docker Command**: `/start.sh`
-    *   *This script initializes models and keeps the container running for SSH.*
-3.  Set Environment Variables (either in the template or via terminal after connecting).
-
+### Logs
+*   **Server Logs:** Will show "Encrypted input received" and status updates (Downloading models, etc.). They will **not** show prompts.
+*   **Client Logs:** Shows polling status and errors.
